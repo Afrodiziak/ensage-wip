@@ -1,3 +1,4 @@
+
 require("libs.Utils")
 require("libs.VectorOp")
 
@@ -41,7 +42,7 @@ require("libs.VectorOp")
 SkillShot = {}
 
 SkillShot.liteMode = false
-SkillShot.onlyHeroes = false
+SkillShot.onlyHeroes = false  	
 
 SkillShot.trackTable = {}
 SkillShot.lastTrackTick = 0
@@ -55,24 +56,25 @@ function SkillShot.__TrackTick(tick)
 	end
 end
 
+i = 1
 function SkillShot.__Track()
-	local all = entityList:FindEntities({type = TYPE_HERO})
+	local all = entityList:FindEntities({type = LuaEntity.TYPE_HERO})
 	if not SkillShot.onlyHeroes then
-		local _addition = entityList:FindEntities({type = TYPE_NPC})
+		local _addition = entityList:FindEntities({type = LuaEntity.TYPE_NPC})
 		for i,v in ipairs(_addition) do
 			table.insert(all,v)
 		end
 	end
 	for i,v in ipairs(all) do
 		if SkillShot.trackTable[v.handle] == nil and v.alive and v.visible then
-			SkillShot.trackTable[v.handle] = {nil,nil,nil,v,nil}
+			SkillShot.trackTable[v.handle] = {}
 		elseif SkillShot.trackTable[v.handle] ~= nil and (not v.alive or not v.visible) then
 			SkillShot.trackTable[v.handle] = nil
-		elseif SkillShot.trackTable[v.handle] then
+		elseif SkillShot.trackTable[v.handle] and (not SkillShot.trackTable[v.handle].last or SkillShot.currentTick > SkillShot.trackTable[v.handle].last.tick) then
 			if SkillShot.trackTable[v.handle].last ~= nil then
-				SkillShot.trackTable[v.handle].speed = (v.position - SkillShot.trackTable[v.handle].last.pos)/(SkillShot.currentTick - SkillShot.trackTable[v.handle].last.tick)
+				SkillShot.trackTable[v.handle].speed = (v.position - SkillShot.trackTable[v.handle].last.position)/(SkillShot.currentTick - SkillShot.trackTable[v.handle].last.tick)
 			end
-			SkillShot.trackTable[v.handle].last = {pos = v.position, tick = SkillShot.currentTick}
+			SkillShot.trackTable[v.handle].last = {position = v.position:Clone(), tick = SkillShot.currentTick}
 		end
 	end
 end
@@ -80,41 +82,28 @@ end
 function SkillShot.InFront(t,distance)
 	local alpha = t.rotR
 	if alpha then
-		local v = t.position + vectorOp:UnitVectorFromXYAngle(alpha) * distance
+		local v = t.position + VectorOp.UnitVectorFromXYAngle(alpha) * distance
 		return Vector(v.x,v.y,0)
 	end
 end
 
 function SkillShot.PredictedXYZ(t,delay)
 	if t.CanMove and not t:CanMove() then
-		return Vector(t.x,t.y,0)
+		return Vector(t.position.x,t.position.y,0)
 	elseif SkillShot.trackTable[t.handle] and SkillShot.trackTable[t.handle].speed then
 		local v = t.position + SkillShot.trackTable[t.handle].speed * delay
-		return Vector(v.x,v.y,0)
+		return Vector(v.x,v.y,t.z or t.position.z)
 	end
 end
 
 function SkillShot.SkillShotXYZ(source,t,delay,speed)
-	if not t:CanMove() then
-		return Vector(t.x,t.y,0)
-	elseif source and t and delay and speed then
-		local delay1 = delay + (GetDistance2D(source,t)*1000/speed)
-		local stage1 = SkillShot.PredictedXYZ(t,delay1)
-		if stage1 then
-			local distance = math.sqrt(math.pow(source.x-stage1.x,2)+math.pow(source.y-stage1.y,2))
-			local delay2 = delay + (distance*1000/speed)
-			local stage2 = SkillShot.PredictedXYZ(t,delay2)
-			local i = 1
-			while (i < 2 and SkillShot.liteMode) or (not SkillShot.liteMode and math.floor(distance) ~= math.floor(math.sqrt(math.pow(source.x-stage1.x,2)+math.pow(source.y-stage1.y,2)))) do
-				stage1 = stage2
-				distance = math.sqrt(math.pow(source.x-stage1.x,2)+math.pow(source.y-stage1.y,2))
-				delay2 = delay + (distance*1000/speed)
-				stage2 = SkillShot.PredictedXYZ(t,delay2)
-				i = i + 1
-			end
-			return Vector(stage2.x,stage2.y,stage2.z)
-		end
-	end
+	if source.position then source = source.position end
+	local dePos = SkillShot.PredictedXYZ(t,delay) - source
+	local a = SkillShot.trackTable[t.handle].speed.x^2 + SkillShot.trackTable[t.handle].speed.y^2 - (speed/1000)^2
+	local b = 2*(dePos.x*SkillShot.trackTable[t.handle].speed.x + dePos.y*SkillShot.trackTable[t.handle].speed.y)
+	local c = dePos.x^2 + dePos.y^2
+	local reachTime = (-b - math.sqrt(b^2 - 4*a*c))/(2*a)
+	return SkillShot.PredictedXYZ(t,delay + reachTime)
 end
 
 
@@ -163,12 +152,14 @@ function SkillShot.__CheckBlock(units,v1,v2,aoe,target)
 	local block = false
 	local filterunits = {}
 	for k,v in pairs(units) do
-		if GetDistance2D(v,target) < distance and GetDistance2D(v,me) < distance and v.handle ~= target.handle then
-			table.insert(filterunits,v)
+		if v ~= nil and v.handle ~= target.handle and v.GetDistance2D then
+			if v1 ~= nil and v:GetDistance2D(v1) < distance and v:GetDistance2D(target) < distance then
+				filterunits[#filterunits + 1] = v
+			end
 		end
 	end
 	for i,v in ipairs(filterunits) do
-		local closest = SkillShot.GetClosestPoint(v1,vectorOp:GetXYAngle(v2 - v1),v.position,distance-aoe)
+		local closest = SkillShot.GetClosestPoint(v1,(v2 - v1):GetXYAngle(),v.position,distance-aoe)
 		if closest then
 			if GetDistance2D(v,closest) < aoe then
 				block = true
